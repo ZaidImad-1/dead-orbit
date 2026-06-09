@@ -1,0 +1,1006 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-fullscreen"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="theme-color" content="#000008"/>
+  <title>Dead Orbit 🧟</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box;}
+    html,body,#root{width:100%;height:100%;background:#000008;overflow:hidden;}
+    body{touch-action:none;-webkit-tap-highlight-color:transparent;overscroll-behavior:none;}
+    #loading{position:fixed;inset:0;background:#000008;display:flex;flex-direction:column;
+      align-items:center;justify-content:center;color:#aa44ff;font-family:monospace;gap:14px;z-index:999;}
+    .spin{animation:spin 1s linear infinite;font-size:48px;}
+    .bar{width:200px;height:4px;background:#111;border-radius:2px;overflow:hidden;border:1px solid #aa44ff33;}
+    .bar-fill{height:100%;background:linear-gradient(90deg,#aa44ff,#ff2244);border-radius:2px;animation:load 1.8s ease-in-out infinite;}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    @keyframes load{0%{width:0%}100%{width:100%}}
+  </style>
+</head>
+<body>
+  <div id="loading">
+    <div class="spin">🚀</div>
+    <div style="font-size:14px;letter-spacing:3px;text-transform:uppercase">Loading Dead Orbit</div>
+    <div class="bar"><div class="bar-fill"></div></div>
+    <div style="font-size:9px;color:#333;letter-spacing:2px;text-transform:uppercase">By Zaid Imad</div>
+  </div>
+  <div id="root"></div>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback } = React;
+
+
+const W = typeof window !== "undefined" ? Math.min(window.innerWidth, 420) : 400;
+const H = typeof window !== "undefined" ? Math.min(window.innerHeight, 700) : 700;
+const isMobile = typeof navigator !== "undefined" ? /Android|iPhone|iPad/i.test(navigator.userAgent) : false;
+
+const LEVELS = [
+  { name:"Dead Orbit",     bg:["#000008","#0a0015"], zombieHp:1, zombieSpeed:0.5, spawnRate:160, count:12, shootBack:false, color:"#aa44ff" },
+  { name:"Blood Nebula",   bg:["#0a0000","#1a0008"], zombieHp:2, zombieSpeed:0.7, spawnRate:130, count:18, shootBack:true,  color:"#ff2222" },
+  { name:"Cursed Station", bg:["#000a00","#0a1500"], zombieHp:2, zombieSpeed:0.9, spawnRate:110, count:22, shootBack:true,  color:"#22ff44" },
+  { name:"The Void",       bg:["#050005","#100010"], zombieHp:3, zombieSpeed:1.1, spawnRate:95,  count:28, shootBack:true,  color:"#ff88ff" },
+  { name:"Hell Gate",      bg:["#100000","#200005"], zombieHp:3, zombieSpeed:1.2, spawnRate:80,  count:35, shootBack:true,  color:"#ff6600" },
+];
+const ZOMBIE_EMOJIS   = ["🧟","🧟‍♂️","🧟‍♀️"];
+const EXPLOSION_EMOJIS= ["💥","✨","🔥"];
+
+// ─── Skins catalogue ─────────────────────────────────────────────────────────
+const SKINS = [
+  { id:"default", name:"Standard",   ship:"🚀", bullet:"#00ffff", trail:"#00ffff44", price:0,    owned:true  },
+  { id:"fire",    name:"Inferno",    ship:"🔥", bullet:"#ff6600", trail:"#ff660044", price:150,  owned:false },
+  { id:"skull",   name:"Reaper",     ship:"💀", bullet:"#aa44ff", trail:"#aa44ff44", price:250,  owned:false },
+  { id:"ufo",     name:"Alien",      ship:"🛸", bullet:"#44ff88", trail:"#44ff8844", price:400,  owned:false },
+  { id:"sword",   name:"Samurai",    ship:"⚔️", bullet:"#ff4466", trail:"#ff446644", price:600,  owned:false },
+  { id:"crystal", name:"Crystal",    ship:"💎", bullet:"#88eeff", trail:"#88eeff44", price:900,  owned:false },
+];
+
+// ─── Audio ───────────────────────────────────────────────────────────────────
+function mkAudio() { try { return new (window.AudioContext||window.webkitAudioContext)(); } catch{return null;} }
+function shootSound(ctx) {
+  if(!ctx) return;
+  const o=ctx.createOscillator(),g=ctx.createGain();
+  o.connect(g);g.connect(ctx.destination);
+  o.type="square";
+  o.frequency.setValueAtTime(880,ctx.currentTime);
+  o.frequency.exponentialRampToValueAtTime(220,ctx.currentTime+0.08);
+  g.gain.setValueAtTime(0.15,ctx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.1);
+  o.start();o.stop(ctx.currentTime+0.1);
+}
+function hitSound(ctx) {
+  if(!ctx) return;
+  const o=ctx.createOscillator(),g=ctx.createGain();
+  o.connect(g);g.connect(ctx.destination);
+  o.type="sawtooth";
+  o.frequency.setValueAtTime(300,ctx.currentTime);
+  o.frequency.exponentialRampToValueAtTime(80,ctx.currentTime+0.15);
+  g.gain.setValueAtTime(0.2,ctx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.2);
+  o.start();o.stop(ctx.currentTime+0.2);
+}
+function comboSound(ctx, mult) {
+  if(!ctx) return;
+  const freqs=[400,500,650,900,1200];
+  const f=freqs[Math.min(mult-2,4)];
+  const o=ctx.createOscillator(),g=ctx.createGain();
+  o.connect(g);g.connect(ctx.destination);
+  o.type="triangle";
+  o.frequency.setValueAtTime(f,ctx.currentTime);
+  o.frequency.exponentialRampToValueAtTime(f*1.5,ctx.currentTime+0.1);
+  g.gain.setValueAtTime(0.2,ctx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.18);
+  o.start();o.stop(ctx.currentTime+0.2);
+}
+function deathSound(ctx) {
+  if(!ctx) return;
+  [200,150,100].forEach((f,i)=>{
+    const o=ctx.createOscillator(),g=ctx.createGain();
+    o.connect(g);g.connect(ctx.destination);
+    o.type="sawtooth";o.frequency.setValueAtTime(f,ctx.currentTime+i*0.1);
+    g.gain.setValueAtTime(0.25,ctx.currentTime+i*0.1);
+    g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+i*0.1+0.2);
+    o.start(ctx.currentTime+i*0.1);o.stop(ctx.currentTime+i*0.1+0.25);
+  });
+}
+function levelUpSound(ctx) {
+  if(!ctx) return;
+  [300,400,600,900].forEach((f,i)=>{
+    const o=ctx.createOscillator(),g=ctx.createGain();
+    o.connect(g);g.connect(ctx.destination);
+    o.type="triangle";o.frequency.setValueAtTime(f,ctx.currentTime+i*0.12);
+    g.gain.setValueAtTime(0.2,ctx.currentTime+i*0.12);
+    g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+i*0.12+0.15);
+    o.start(ctx.currentTime+i*0.12);o.stop(ctx.currentTime+i*0.12+0.18);
+  });
+}
+function startHorrorMusic(ctx) {
+  if(!ctx) return null;
+  let stopped=false;
+  const notes=[110,98,87,82,98,110,87,77];
+  function scheduleLoop(base) {
+    if(stopped) return;
+    notes.forEach((freq,i)=>{
+      const t=base+i*0.5;
+      const o=ctx.createOscillator(),g=ctx.createGain();
+      o.connect(g);g.connect(ctx.destination);
+      o.type="sawtooth";o.frequency.setValueAtTime(freq,t);
+      g.gain.setValueAtTime(0,t);
+      g.gain.linearRampToValueAtTime(0.06,t+0.05);
+      g.gain.linearRampToValueAtTime(0.04,t+0.4);
+      g.gain.linearRampToValueAtTime(0,t+0.5);
+      o.start(t);o.stop(t+0.52);
+    });
+    const drone=ctx.createOscillator(),dg=ctx.createGain();
+    drone.connect(dg);dg.connect(ctx.destination);
+    drone.type="sine";drone.frequency.setValueAtTime(55,base);
+    dg.gain.setValueAtTime(0.08,base);
+    dg.gain.linearRampToValueAtTime(0,base+4);
+    drone.start(base);drone.stop(base+4.1);
+    if(!stopped){
+      const timeout=setTimeout(()=>scheduleLoop(base+4),3700);
+      return()=>clearTimeout(timeout);
+    }
+  }
+  scheduleLoop(ctx.currentTime+0.1);
+  return()=>{stopped=true;};
+}
+function enterFullscreen() {
+  const el=document.documentElement;
+  if(el.requestFullscreen) el.requestFullscreen();
+  else if(el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+}
+
+// ─── Main App ────────────────────────────────────────────────────────────────
+function App() {
+  const [screen,    setScreen]    = useState("intro");
+  const [levelIdx,  setLevelIdx]  = useState(0);
+  const [score,     setScore]     = useState(0);
+  const [best,      setBest]      = useState(0);
+  const [hp,        setHp]        = useState(5);
+  const [killed,    setKilled]    = useState(0);
+  const [coins,     setCoins]     = useState(0);
+  const [combo,     setCombo]     = useState(0);
+  const [comboFlash,setComboFlash]= useState(false);
+  const [musicOn,   setMusicOn]   = useState(true);
+
+  // Shop & skins state — persisted in memory
+  const [skinsList, setSkinsList] = useState(SKINS);
+  const [activeSkin,setActiveSkin]= useState("default");
+  const [shopScreen,setShopScreen]= useState(false); // overlay on intro
+
+  const canvasRef    = useRef(null);
+  const ctxRef       = useRef(null);
+  const stateRef     = useRef(null);
+  const screenRef    = useRef("intro");
+  const rafRef       = useRef(null);
+  const audioRef     = useRef(null);
+  const musicStopRef = useRef(null);
+  const keysRef      = useRef({});
+  const touchRef     = useRef({left:false,right:false,shoot:false});
+  const coinsRef     = useRef(0);
+  const comboRef     = useRef(0);
+  const comboTimerRef= useRef(null);
+  const activeSkinRef  = useRef("default");
+  const skinsListRef   = useRef(SKINS);
+
+  const getAudio=()=>{
+    if(!audioRef.current) audioRef.current=mkAudio();
+    if(audioRef.current?.state==="suspended") audioRef.current.resume();
+    return audioRef.current;
+  };
+
+  // ctx is grabbed inside the game loop when canvas is available
+
+  useEffect(()=>{
+    if(screen==="intro"&&musicOn){
+      const t=setTimeout(()=>{
+        const ctx=getAudio();
+        if(musicStopRef.current){musicStopRef.current();musicStopRef.current=null;}
+        musicStopRef.current=startHorrorMusic(ctx);
+      },400);
+      return()=>{clearTimeout(t);if(musicStopRef.current){musicStopRef.current();musicStopRef.current=null;}};
+    } else {
+      if(musicStopRef.current){musicStopRef.current();musicStopRef.current=null;}
+    }
+  },[screen,musicOn]);
+
+  // keep activeSkinRef in sync
+  useEffect(()=>{activeSkinRef.current=activeSkin;},[activeSkin]);
+  useEffect(()=>{skinsListRef.current=skinsList;},[skinsList]);
+
+  const currentSkin=()=>skinsList.find(s=>s.id===activeSkin)||SKINS[0];
+
+  // ── Combo system ──
+  const triggerCombo=useCallback((lvlZombieHp)=>{
+    const newCombo=comboRef.current+1;
+    comboRef.current=newCombo;
+    // reset combo timer (1.5s of inactivity breaks combo)
+    if(comboTimerRef.current) clearTimeout(comboTimerRef.current);
+    comboTimerRef.current=setTimeout(()=>{comboRef.current=0;setCombo(0);},1500);
+    setCombo(newCombo);
+    const mult=Math.floor(newCombo/3)+1; // x2 at 3 kills, x3 at 6, etc
+    if(newCombo>0&&newCombo%3===0){
+      setComboFlash(true);
+      setTimeout(()=>setComboFlash(false),400);
+      comboSound(getAudio(),mult);
+      navigator.vibrate?.([30,20,30]);
+      // bonus points
+      const bonus=50*mult;
+      if(stateRef.current){
+        stateRef.current.score+=bonus;
+        setScore(stateRef.current.score);
+      }
+    }
+    return mult;
+  },[]);
+
+  // ── Build state ──
+  const buildState=useCallback((lvlIdx,prevScore=0,prevCoins=0)=>{
+    return {
+      lvlIdx,
+      ship:{x:W/2,y:H-90,w:36,h:36},
+      bullets:[],enemyBullets:[],zombies:[],explosions:[],trails:[],
+      stars:Array.from({length:isMobile?30:60},()=>({
+        x:Math.random()*W,y:Math.random()*H,
+        r:Math.random()*1.5+0.3,speed:Math.random()*0.8+0.2,brightness:Math.random()*0.5+0.3,
+      })),
+      score:prevScore,coins:prevCoins,hp:5,killed:0,
+      frame:0,spawnCount:0,shootCooldown:0,shakeFrames:0,flashFrames:0,flashColor:"#ffffff",
+    };
+  },[]);
+
+  const startLevel=useCallback((idx,prevScore=0)=>{
+    comboRef.current=0; setCombo(0);
+    ctxRef.current=null; // reset so game loop grabs fresh context on new canvas mount
+    const c=coinsRef.current;
+    stateRef.current=buildState(idx,prevScore,c);
+    screenRef.current="playing";
+    setScreen("playing");setLevelIdx(idx);setScore(prevScore);setHp(5);setKilled(0);
+  },[buildState]);
+
+  // ── Keyboard ──
+  useEffect(()=>{
+    const down=e=>{keysRef.current[e.key]=true;};
+    const up=e=>{keysRef.current[e.key]=false;};
+    window.addEventListener("keydown",down);
+    window.addEventListener("keyup",up);
+    return()=>{window.removeEventListener("keydown",down);window.removeEventListener("keyup",up);};
+  },[]);
+
+  // ── Game loop ──
+  useEffect(()=>{
+    if(screen!=="playing"){cancelAnimationFrame(rafRef.current);return;}
+    const tick=()=>{
+      rafRef.current=requestAnimationFrame(tick);
+      const s=stateRef.current;
+      if(!s||!canvasRef.current) return;
+      // grab or cache context each frame (safe for late-mount canvas)
+      if(!ctxRef.current) ctxRef.current=canvasRef.current.getContext("2d");
+      const ctx=ctxRef.current;
+      if(!ctx) return;
+      const lvl=LEVELS[s.lvlIdx];
+      const skin=skinsListRef.current.find(sk=>sk.id===activeSkinRef.current)||SKINS[0];
+      s.frame++;
+
+      // Move ship
+      const spd=isMobile?6:4;
+      const keys=keysRef.current,t=touchRef.current;
+      if((keys["ArrowLeft"]||keys["a"]||t.left)&&s.ship.x>s.ship.w/2) s.ship.x-=spd;
+      if((keys["ArrowRight"]||keys["d"]||t.right)&&s.ship.x<W-s.ship.w/2) s.ship.x+=spd;
+
+      // Shoot
+      s.shootCooldown=Math.max(0,s.shootCooldown-1);
+      if((keys[" "]||keys["ArrowUp"]||t.shoot)&&s.shootCooldown===0){
+        s.bullets.push({x:s.ship.x,y:s.ship.y-20,vy:-10,w:4,h:14,color:skin.bullet});
+        // trail particles behind bullet
+        s.trails.push({x:s.ship.x,y:s.ship.y-10,life:8,color:skin.trail});
+        s.shootCooldown=12;
+        shootSound(getAudio());
+        navigator.vibrate?.(8);
+      }
+
+      // Spawn zombies
+      if(s.spawnCount<lvl.count&&s.frame%lvl.spawnRate===0){
+        let spawnX,tries=0,minDist=70;
+        do{spawnX=50+Math.random()*(W-100);tries++;}
+        while(tries<20&&s.zombies.some(z=>z.y<120&&Math.abs(z.x-spawnX)<minDist));
+        s.zombies.push({
+          x:spawnX,y:-40,vy:lvl.zombieSpeed,
+          hp:lvl.zombieHp,maxHp:lvl.zombieHp,
+          emoji:ZOMBIE_EMOJIS[Math.floor(Math.random()*3)],
+          shootTimer:Math.floor(Math.random()*150)+90,
+          id:s.frame,wobble:Math.random()*Math.PI*2,wobbleSpeed:0.04+Math.random()*0.02,
+        });
+        s.spawnCount++;
+      }
+
+      // Move zombies
+      s.zombies.forEach(z=>{
+        z.y+=z.vy;z.wobble+=z.wobbleSpeed;z.x+=Math.sin(z.wobble)*1.2;
+        if(lvl.shootBack){
+          z.shootTimer--;
+          if(z.shootTimer<=0){
+            s.enemyBullets.push({x:z.x,y:z.y+20,vy:3.5,w:6,h:10,color:lvl.color});
+            z.shootTimer=Math.floor(Math.random()*100)+80;
+          }
+        }
+      });
+
+      // Move bullets + trails
+      s.bullets=s.bullets.filter(b=>{b.y+=b.vy;return b.y>-20;});
+      s.enemyBullets=s.enemyBullets.filter(b=>{b.y+=b.vy;return b.y<H+20;});
+      s.trails=s.trails.filter(tr=>{tr.y-=2;tr.life--;return tr.life>0;});
+
+      // Bullet vs zombie
+      s.bullets=s.bullets.filter(b=>{
+        let hit=false;
+        s.zombies=s.zombies.map(z=>{
+          if(!hit&&Math.abs(b.x-z.x)<28&&Math.abs(b.y-z.y)<28){
+            z.hp--;hit=true;
+            if(z.hp<=0){
+              s.explosions.push({x:z.x,y:z.y,born:s.frame,emoji:EXPLOSION_EMOJIS[Math.floor(Math.random()*3)]});
+              // coins drop
+              const coinDrop=lvl.zombieHp*5;
+              s.coins=(s.coins||0)+coinDrop;
+              coinsRef.current=s.coins;
+              setCoins(s.coins);
+              // score
+              const mult=Math.floor(comboRef.current/3)+1;
+              s.score+=10*lvl.zombieHp*mult;
+              s.killed++;
+              hitSound(getAudio());
+              navigator.vibrate?.(15);
+              setScore(s.score);setKilled(s.killed);
+              triggerCombo(lvl.zombieHp);
+            }
+          }
+          return z;
+        }).filter(z=>z.hp>0);
+        return !hit;
+      });
+
+      // Enemy bullet vs ship
+      s.enemyBullets=s.enemyBullets.filter(b=>{
+        const hit=Math.abs(b.x-s.ship.x)<22&&Math.abs(b.y-s.ship.y)<22;
+        if(hit){
+          s.hp--;s.shakeFrames=8;s.flashFrames=6;s.flashColor="#ff000066";
+          comboRef.current=0;setCombo(0); // break combo on hit
+          deathSound(getAudio());navigator.vibrate?.(40);setHp(s.hp);
+          if(s.hp<=0){setBest(b=>Math.max(b,s.score));screenRef.current="dead";setScreen("dead");cancelAnimationFrame(rafRef.current);}
+        }
+        return !hit;
+      });
+
+      // Zombie reaches bottom
+      s.zombies=s.zombies.filter(z=>{
+        if(z.y>H-60){
+          s.hp--;s.shakeFrames=12;s.flashFrames=8;s.flashColor="#ff000088";
+          comboRef.current=0;setCombo(0);
+          deathSound(getAudio());navigator.vibrate?.(60);setHp(s.hp);
+          s.explosions.push({x:z.x,y:z.y,born:s.frame,emoji:"💥"});
+          if(s.hp<=0){setBest(b=>Math.max(b,s.score));screenRef.current="dead";setScreen("dead");cancelAnimationFrame(rafRef.current);}
+          return false;
+        }
+        return true;
+      });
+
+      // Level complete
+      if(s.spawnCount>=lvl.count&&s.zombies.length===0&&screenRef.current==="playing"){
+        levelUpSound(getAudio());setBest(b=>Math.max(b,s.score));
+        if(s.lvlIdx>=LEVELS.length-1){screenRef.current="win";setScreen("win");}
+        else{screenRef.current="levelup";setScreen("levelup");}
+        cancelAnimationFrame(rafRef.current);return;
+      }
+
+      s.explosions=s.explosions.filter(e=>s.frame-e.born<20);
+      s.shakeFrames=Math.max(0,s.shakeFrames-1);
+      s.flashFrames=Math.max(0,(s.flashFrames||0)-1);
+
+      // ── DRAW ──────────────────────────────────────────────────────────────
+      const shakeX=s.shakeFrames>0?(Math.random()-0.5)*8:0;
+      const shakeY=s.shakeFrames>0?(Math.random()-0.5)*8:0;
+      ctx.save();
+      ctx.translate(shakeX,shakeY);
+
+      // BG
+      const bg=ctx.createLinearGradient(0,0,0,H);
+      bg.addColorStop(0,lvl.bg[0]);bg.addColorStop(1,lvl.bg[1]);
+      ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+
+      // Stars
+      s.stars.forEach(star=>{
+        star.y+=star.speed;if(star.y>H)star.y=-5;
+        const tw=0.3+0.7*Math.abs(Math.sin(s.frame/60+star.x));
+        ctx.globalAlpha=tw*star.brightness;
+        ctx.fillStyle="#fff";ctx.beginPath();ctx.arc(star.x,star.y,star.r,0,Math.PI*2);ctx.fill();
+      });
+      ctx.globalAlpha=1;
+
+      // Nebula
+      const neb=ctx.createRadialGradient(W*0.3,H*0.4,0,W*0.3,H*0.4,W*0.5);
+      neb.addColorStop(0,`rgba(${parseInt(lvl.color.slice(1,3),16)},${parseInt(lvl.color.slice(3,5),16)},${parseInt(lvl.color.slice(5,7),16)},0.06)`);
+      neb.addColorStop(1,"rgba(0,0,0,0)");
+      ctx.fillStyle=neb;ctx.fillRect(0,0,W,H);
+
+      // Screen flash on hit
+      if(s.flashFrames>0){
+        ctx.fillStyle=s.flashColor;ctx.fillRect(0,0,W,H);
+      }
+
+      // Trails
+      s.trails.forEach(tr=>{
+        ctx.globalAlpha=tr.life/8*0.6;
+        ctx.fillStyle=tr.color;
+        ctx.beginPath();ctx.arc(tr.x,tr.y,3,0,Math.PI*2);ctx.fill();
+      });
+      ctx.globalAlpha=1;
+
+      // Enemy bullets
+      s.enemyBullets.forEach(b=>{
+        ctx.fillStyle=lvl.color;
+        ctx.shadowColor=lvl.color;ctx.shadowBlur=isMobile?0:15;
+        ctx.beginPath();ctx.ellipse(b.x,b.y,b.w/2,b.h/2,0,0,Math.PI*2);ctx.fill();
+        ctx.shadowBlur=0;
+      });
+
+      // Player bullets — skin color + trail effect
+      s.bullets.forEach(b=>{
+        ctx.fillStyle=skin.bullet;
+        ctx.shadowColor=skin.bullet;ctx.shadowBlur=isMobile?0:15;
+        ctx.beginPath();ctx.ellipse(b.x,b.y,b.w/2,b.h/2,0,0,Math.PI*2);ctx.fill();
+        ctx.shadowBlur=0;
+      });
+
+      // Zombies
+      s.zombies.forEach(z=>{
+        const bw=40,bh=4;
+        ctx.fillStyle="rgba(0,0,0,0.5)";ctx.fillRect(z.x-bw/2,z.y-28,bw,bh);
+        ctx.fillStyle=z.hp>z.maxHp/2?"#44ff44":"#ff4444";
+        ctx.fillRect(z.x-bw/2,z.y-28,bw*(z.hp/z.maxHp),bh);
+        ctx.font="28px serif";ctx.textAlign="center";ctx.textBaseline="middle";
+        ctx.shadowColor=lvl.color;ctx.shadowBlur=isMobile?0:15;
+        ctx.fillText(z.emoji,z.x,z.y);ctx.shadowBlur=0;
+      });
+
+      // Explosions
+      s.explosions.forEach(e=>{
+        const age=(s.frame-e.born)/20;
+        ctx.globalAlpha=1-age;
+        ctx.font=`${24+age*20}px serif`;ctx.textAlign="center";ctx.textBaseline="middle";
+        ctx.fillText(e.emoji,e.x,e.y);ctx.globalAlpha=1;
+      });
+
+      // Ship — skin emoji
+      ctx.save();ctx.translate(s.ship.x,s.ship.y);
+      ctx.shadowColor=skin.bullet;ctx.shadowBlur=isMobile?0:15;
+      ctx.font="36px serif";ctx.textAlign="center";ctx.textBaseline="middle";
+      ctx.fillText(skin.ship,0,0);ctx.shadowBlur=0;ctx.restore();
+
+      // Engine flame
+      ctx.shadowColor="#ff6600";ctx.shadowBlur=isMobile?0:15;
+      ctx.font="18px serif";ctx.textAlign="center";
+      ctx.fillText("🔥",s.ship.x,s.ship.y+26);ctx.shadowBlur=0;
+
+      ctx.restore();
+    };
+    rafRef.current=requestAnimationFrame(tick);
+    const onVis=()=>{};
+    document.addEventListener("visibilitychange",onVis);
+    return()=>{cancelAnimationFrame(rafRef.current);document.removeEventListener("visibilitychange",onVis);};
+  },[screen]); // skinsList accessed via ref to avoid loop restarts
+
+  const lvl=LEVELS[levelIdx];
+  const accent=lvl?.color||"#aa44ff";
+  const skin=currentSkin();
+  const comboMult=Math.floor(combo/3)+1;
+
+  // ── Shop functions ──
+  const buySkin=(id)=>{
+    const sk=skinsList.find(s=>s.id===id);
+    if(!sk||sk.owned||coins<sk.price) return;
+    coinsRef.current=coins-sk.price;
+    setCoins(coinsRef.current);
+    setSkinsList(prev=>prev.map(s=>s.id===id?{...s,owned:true}:s));
+  };
+  const equipSkin=(id)=>{
+    setActiveSkin(id);activeSkinRef.current=id;
+  };
+
+  // ── HUD ──
+  const HUD=screen==="playing"&&(
+    <div style={{position:"fixed",top:0,left:0,right:0,zIndex:10,
+      display:"flex",justifyContent:"space-between",alignItems:"center",
+      padding:"8px 14px",background:"rgba(0,0,0,0.7)",
+      borderBottom:`1px solid ${accent}33`,fontFamily:"monospace",color:"#fff",gap:4}}>
+      <div style={{fontSize:13}}>⭐ {score}</div>
+      <div style={{fontSize:11,color:accent,fontWeight:700,textAlign:"center"}}>
+        LVL {levelIdx+1} — {lvl.name}
+      </div>
+      <div style={{display:"flex",gap:3}}>
+        {Array.from({length:5}).map((_,i)=>(
+          <span key={i} style={{fontSize:13,opacity:i<hp?1:0.15}}>❤️</span>
+        ))}
+      </div>
+    </div>
+  );
+
+  // ── Combo HUD overlay ──
+  const ComboHUD=screen==="playing"&&combo>=2&&(
+    <div style={{
+      position:"fixed",top:52,left:"50%",transform:"translateX(-50%)",
+      zIndex:12,pointerEvents:"none",
+      fontFamily:"monospace",fontWeight:900,
+      fontSize:combo>=6?22:combo>=3?18:14,
+      color:combo>=6?"#ffd700":combo>=3?"#ff6600":"#ffffff",
+      textShadow:combo>=6?"0 0 20px #ffd700":combo>=3?"0 0 14px #ff6600":"0 0 8px #fff",
+      letterSpacing:3,textTransform:"uppercase",
+      animation:comboFlash?"flashCombo 0.4s ease":"none",
+      transition:"all 0.15s",
+    }}>
+      {combo>=6?"🔥 ULTRA ":combo>=3?"⚡ ":""}x{comboMult} COMBO &mdash; {combo} KILLS
+    </div>
+  );
+
+  // ── Combo flash overlay ──
+  const ComboFlashOverlay=comboFlash&&(
+    <div style={{position:"fixed",inset:0,zIndex:11,pointerEvents:"none",
+      background:`radial-gradient(ellipse at center,${
+        comboMult>=4?"rgba(255,215,0,0.18)":comboMult>=3?"rgba(255,100,0,0.15)":"rgba(100,255,100,0.12)"
+      },transparent 70%)`,
+      animation:"fadeFlash 0.4s ease-out forwards"}}/>
+  );
+
+  // ── Kill bar ──
+  const KillBar=screen==="playing"&&(
+    <div style={{position:"fixed",bottom:110,left:16,right:16,zIndex:10}}>
+      <div style={{display:"flex",justifyContent:"space-between",
+        color:accent,fontSize:11,marginBottom:3,fontFamily:"monospace"}}>
+        <span>🧟 {killed}/{lvl.count}</span>
+        <span style={{color:"#ffd700"}}>🪙 {coins}</span>
+        <span>🏆 {best}</span>
+      </div>
+      <div style={{height:4,background:"rgba(255,255,255,0.08)",borderRadius:4,overflow:"hidden"}}>
+        <div style={{height:"100%",borderRadius:4,
+          background:`linear-gradient(90deg,${accent}88,${accent})`,
+          width:`${Math.min((killed/lvl.count)*100,100)}%`,transition:"width 0.2s"}}/>
+      </div>
+    </div>
+  );
+
+  // ── Mobile controls — native touch listeners (zero delay) ──
+  const leftBtnRef  = useRef(null);
+  const rightBtnRef = useRef(null);
+  const shootBtnRef = useRef(null);
+
+  useEffect(()=>{
+    const skin = skinsList.find(sk=>sk.id===activeSkin)||SKINS[0];
+    const addBtn = (ref, key) => {
+      const el = ref.current;
+      if (!el) return;
+      const start = e => { e.preventDefault(); e.stopPropagation(); touchRef.current[key]=true; navigator.vibrate?.(8); };
+      const end   = e => { e.preventDefault(); e.stopPropagation(); touchRef.current[key]=false; };
+      // pointerdown fires before touchstart — fastest possible response
+      el.addEventListener("pointerdown",  start, { passive: false });
+      el.addEventListener("pointerup",    end,   { passive: false });
+      el.addEventListener("pointerleave", end,   { passive: false });
+      el.addEventListener("pointercancel",end,   { passive: false });
+      // fallback for older devices
+      el.addEventListener("touchstart", start, { passive: false });
+      el.addEventListener("touchend",   end,   { passive: false });
+      el.addEventListener("touchcancel",end,   { passive: false });
+      return () => {
+        el.removeEventListener("pointerdown",  start);
+        el.removeEventListener("pointerup",    end);
+        el.removeEventListener("pointerleave", end);
+        el.removeEventListener("pointercancel",end);
+        el.removeEventListener("touchstart", start);
+        el.removeEventListener("touchend",   end);
+        el.removeEventListener("touchcancel",end);
+      };
+    };
+    const c1 = addBtn(leftBtnRef,  "left");
+    const c2 = addBtn(rightBtnRef, "right");
+    const c3 = addBtn(shootBtnRef, "shoot");
+    return () => { c1?.(); c2?.(); c3?.(); };
+  }, [screen, activeSkin, skinsList]);
+
+  const skin2 = skinsList.find(sk=>sk.id===activeSkin)||SKINS[0];
+  const Controls=screen==="playing"&&(
+    <div style={{position:"fixed",bottom:12,left:0,right:0,zIndex:10,
+      display:"flex",justifyContent:"center",alignItems:"center",gap:16,padding:"0 16px"}}>
+      <button ref={leftBtnRef}
+        onMouseDown={()=>touchRef.current.left=true}
+        onMouseUp={()=>touchRef.current.left=false}
+        style={{width:80,height:80,borderRadius:20,fontSize:30,fontWeight:900,
+          color:skin2.bullet,background:`${skin2.bullet}22`,border:`2px solid ${skin2.bullet}66`,
+          cursor:"pointer",WebkitTapHighlightColor:"transparent",userSelect:"none",
+          touchAction:"none",outline:"none",
+          boxShadow:`0 0 16px ${skin2.bullet}33`}}>◀</button>
+      <button ref={shootBtnRef}
+        onMouseDown={()=>touchRef.current.shoot=true}
+        onMouseUp={()=>touchRef.current.shoot=false}
+        style={{width:90,height:90,borderRadius:"50%",fontSize:32,color:"#fff",
+          background:"radial-gradient(circle,rgba(255,50,50,0.5),rgba(150,0,0,0.35))",
+          border:"2px solid rgba(255,80,80,0.6)",cursor:"pointer",
+          WebkitTapHighlightColor:"transparent",userSelect:"none",
+          touchAction:"none",outline:"none",
+          boxShadow:"0 0 24px rgba(255,0,0,0.4)"}}>🔫</button>
+      <button ref={rightBtnRef}
+        onMouseDown={()=>touchRef.current.right=true}
+        onMouseUp={()=>touchRef.current.right=false}
+        style={{width:80,height:80,borderRadius:20,fontSize:30,fontWeight:900,
+          color:skin2.bullet,background:`${skin2.bullet}22`,border:`2px solid ${skin2.bullet}66`,
+          cursor:"pointer",WebkitTapHighlightColor:"transparent",userSelect:"none",
+          touchAction:"none",outline:"none",
+          boxShadow:`0 0 16px ${skin2.bullet}33`}}>▶</button>
+    </div>
+  );
+
+  // ── SHOP OVERLAY ──
+  if(shopScreen) return (
+    <div style={{minHeight:"100vh",background:"linear-gradient(160deg,#000008,#0a0015)",
+      display:"flex",flexDirection:"column",fontFamily:"monospace",color:"#fff",overflow:"hidden"}}>
+      {/* header */}
+      <div style={{display:"flex",alignItems:"center",gap:12,padding:"16px",
+        borderBottom:"1px solid #aa44ff33",background:"rgba(0,0,0,0.5)"}}>
+        <button onClick={()=>setShopScreen(false)} style={{
+          background:"rgba(255,255,255,0.08)",border:"1px solid #ffffff22",
+          borderRadius:8,color:"#aaa",fontSize:18,cursor:"pointer",padding:"6px 12px"}}>←</button>
+        <div>
+          <div style={{color:"#aa44ff",fontWeight:900,fontSize:16,letterSpacing:2}}>ARMORY SHOP</div>
+          <div style={{color:"#555",fontSize:10}}>UPGRADE YOUR SHIP</div>
+        </div>
+        <div style={{marginLeft:"auto",background:"rgba(255,215,0,0.1)",
+          border:"1px solid #ffd70033",borderRadius:8,padding:"6px 14px",
+          color:"#ffd700",fontSize:14,fontWeight:700}}>🪙 {coins}</div>
+      </div>
+
+      {/* skin grid */}
+      <div style={{flex:1,overflowY:"auto",padding:16,display:"grid",
+        gridTemplateColumns:"1fr 1fr",gap:12}}>
+        {skinsList.map(sk=>{
+          const isActive=activeSkin===sk.id;
+          const canAfford=coins>=sk.price;
+          return (
+            <div key={sk.id} style={{
+              background:isActive?`${sk.bullet}18`:"rgba(255,255,255,0.04)",
+              border:`2px solid ${isActive?sk.bullet:sk.owned?"#ffffff22":"#ffffff11"}`,
+              borderRadius:14,padding:"14px 10px",textAlign:"center",
+              transition:"all 0.2s",position:"relative",
+            }}>
+              {isActive&&<div style={{position:"absolute",top:6,right:8,
+                fontSize:9,color:sk.bullet,fontWeight:900,letterSpacing:1}}>ACTIVE</div>}
+              <div style={{fontSize:36,marginBottom:6,
+                filter:sk.owned?`drop-shadow(0 0 8px ${sk.bullet})`:"grayscale(0.8) opacity(0.5)"
+              }}>{sk.ship}</div>
+              <div style={{fontSize:12,fontWeight:700,color:sk.owned?sk.bullet:"#555",marginBottom:2}}>{sk.name}</div>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:4,marginBottom:8}}>
+                <div style={{width:12,height:12,borderRadius:"50%",background:sk.bullet,opacity:0.8}}/>
+                <div style={{width:20,height:3,borderRadius:2,background:sk.trail,border:`1px solid ${sk.bullet}66`}}/>
+              </div>
+              {sk.owned ? (
+                <button onClick={()=>equipSkin(sk.id)} style={{
+                  padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,cursor:"pointer",
+                  background:isActive?sk.bullet:"rgba(255,255,255,0.08)",
+                  border:`1px solid ${isActive?sk.bullet:"#ffffff22"}`,
+                  color:isActive?"#000":"#aaa",letterSpacing:1,
+                }}>{isActive?"EQUIPPED":"EQUIP"}</button>
+              ):(
+                <button onClick={()=>buySkin(sk.id)} style={{
+                  padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,cursor:"pointer",
+                  background:canAfford?"rgba(255,215,0,0.15)":"rgba(255,255,255,0.04)",
+                  border:`1px solid ${canAfford?"#ffd70044":"#ffffff11"}`,
+                  color:canAfford?"#ffd700":"#444",letterSpacing:1,
+                }}>🪙 {sk.price}</button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* tip */}
+      <div style={{padding:"10px",textAlign:"center",color:"#333",fontSize:9,letterSpacing:2,
+        borderTop:"1px solid #ffffff08"}}>
+        EARN COINS BY KILLING ZOMBIES — COMBOS MULTIPLY YOUR SCORE
+      </div>
+    </div>
+  );
+
+  // ── INTRO ──
+  if(screen==="intro") return (
+    <div style={{minHeight:"100vh",overflow:"hidden",position:"relative",
+      background:"#000008",fontFamily:"'Courier New',monospace",color:"#fff",
+      display:"flex",flexDirection:"column",userSelect:"none",
+      touchAction:"none",overscrollBehavior:"none"}}>
+      {/* stars */}
+      <div style={{position:"fixed",inset:0,zIndex:0,overflow:"hidden"}}>
+        {Array.from({length:60}).map((_,i)=>(
+          <div key={i} style={{position:"absolute",
+            width:i%8===0?3:i%4===0?2:1.2,height:i%8===0?3:i%4===0?2:1.2,
+            borderRadius:"50%",
+            background:i%5===0?"#aa44ff":i%5===1?"#ff2244":i%5===2?"#ff6600":"#fff",
+            opacity:0.15+Math.random()*0.7,
+            top:`${Math.random()*100}%`,left:`${Math.random()*100}%`,
+            animation:`twinkle ${1.2+Math.random()*3}s ease-in-out ${Math.random()*2}s infinite alternate`,
+          }}/>
+        ))}
+      </div>
+      {/* top strip */}
+      <div style={{position:"relative",zIndex:2,
+        background:"linear-gradient(90deg,#ff000022,#aa000044,#ff000022)",
+        borderBottom:"1px solid #ff000044",
+        padding:"6px 16px",textAlign:"center",
+        fontSize:10,letterSpacing:4,color:"#ff4444",textTransform:"uppercase"}}>
+        ⚠ &nbsp; ZOMBIE ALERT — ALL SECTORS &nbsp; ⚠
+      </div>
+
+      <div style={{position:"relative",zIndex:2,flex:1,display:"flex",flexDirection:"column",
+        alignItems:"center",justifyContent:"center",padding:"16px 24px",textAlign:"center"}}>
+
+        <div style={{fontSize:52,marginBottom:6,lineHeight:1,animation:"battle 2s ease-in-out infinite"}}>
+          🧟‍♂️&thinsp;⚡&thinsp;{skin.ship}
+        </div>
+        <div style={{fontSize:42,fontWeight:900,letterSpacing:6,textTransform:"uppercase",
+          lineHeight:0.9,marginBottom:4,
+          background:"linear-gradient(180deg,#ff4444 0%,#aa0000 60%,#550000 100%)",
+          WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",
+          filter:"drop-shadow(0 0 12px rgba(255,0,0,0.6))",
+          animation:"glitch 4s steps(1) infinite"}}>DEAD<br/>ORBIT</div>
+        <div style={{fontSize:11,letterSpacing:5,color:"#aa44ff",textTransform:"uppercase",
+          marginBottom:4,textShadow:"0 0 10px #8800ff"}}>Space Zombie Shooter</div>
+
+        {/* divider */}
+        <div style={{width:"100%",maxWidth:300,margin:"12px auto",position:"relative",height:20}}>
+          <div style={{position:"absolute",top:"50%",left:0,right:0,height:1,
+            background:"linear-gradient(90deg,transparent,#ff000088,#aa44ff88,transparent)"}}/>
+          <div style={{position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)",
+            background:"#000008",padding:"0 8px",fontSize:14}}>☠️</div>
+        </div>
+
+        {/* coins display */}
+        <div style={{display:"flex",gap:8,marginBottom:12,alignItems:"center"}}>
+          <div style={{background:"rgba(255,215,0,0.1)",border:"1px solid #ffd70033",
+            borderRadius:8,padding:"5px 14px",color:"#ffd700",fontSize:13,fontWeight:700}}>
+            🪙 {coins} coins
+          </div>
+          {activeSkin!=="default"&&<div style={{
+            background:"rgba(255,255,255,0.06)",border:"1px solid #ffffff22",
+            borderRadius:8,padding:"5px 12px",fontSize:12,color:"#aaa"}}>
+            {skin.ship} {skin.name}
+          </div>}
+        </div>
+
+        {/* mission briefing */}
+        <div style={{background:"rgba(255,0,0,0.05)",border:"1px solid rgba(255,50,50,0.2)",
+          borderRadius:8,padding:"12px 18px",marginBottom:14,maxWidth:280,textAlign:"left"}}>
+          <div style={{color:"#ff4444",fontSize:10,letterSpacing:3,marginBottom:8,textTransform:"uppercase"}}>
+            📡 Mission Briefing
+          </div>
+          {[["🧟","Destroy all space zombies"],["❤️","5 lives per level"],
+            ["⚡","Combo = x multiplier + bonus"],["🪙","Coins from kills → buy skins"],
+          ].map(([icon,txt],i)=>(
+            <div key={i} style={{display:"flex",gap:8,alignItems:"center",fontSize:11,color:"#aaa",marginBottom:5}}>
+              <span style={{fontSize:14}}>{icon}</span>{txt}
+            </div>
+          ))}
+        </div>
+
+        {/* wave badges */}
+        <div style={{display:"flex",gap:6,marginBottom:16,overflowX:"auto",
+          width:"100%",maxWidth:320,justifyContent:"center"}}>
+          {LEVELS.map((l,i)=>(
+            <div key={i} style={{flexShrink:0,
+              background:`linear-gradient(135deg,${l.color}15,${l.color}08)`,
+              border:`1px solid ${l.color}44`,
+              borderRadius:8,padding:"6px 10px",textAlign:"center",minWidth:55}}>
+              <div style={{color:l.color,fontSize:11,fontWeight:900}}>W{i+1}</div>
+              <div style={{color:"#555",fontSize:8,marginTop:1}}>{l.name.split(" ")[0]}</div>
+              <div style={{color:l.color,fontSize:8,opacity:0.6,marginTop:1}}>×{l.count}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* buttons row */}
+        <div style={{display:"flex",gap:10,marginBottom:14,alignItems:"center",flexWrap:"wrap",justifyContent:"center"}}>
+          <button onClick={()=>{getAudio();if(musicStopRef.current){musicStopRef.current();musicStopRef.current=null;}startLevel(0);}}
+            style={{padding:"14px 36px",
+              background:"linear-gradient(135deg,#cc0000,#660000,#330000)",
+              border:"2px solid #ff000055",borderRadius:6,color:"#fff",
+              fontSize:17,fontWeight:900,cursor:"pointer",letterSpacing:3,textTransform:"uppercase",
+              boxShadow:"0 0 24px rgba(200,0,0,0.5)",animation:"redpulse 2s ease-in-out infinite"}}>▶ Start Game</button>
+          <button onClick={()=>setShopScreen(true)} style={{
+            padding:"14px 20px",background:"rgba(255,215,0,0.12)",
+            border:"2px solid rgba(255,215,0,0.3)",borderRadius:6,
+            color:"#ffd700",fontSize:15,fontWeight:700,cursor:"pointer",letterSpacing:1}}>🪙 SHOP</button>
+          <button onClick={()=>{enterFullscreen();getAudio();if(musicStopRef.current){musicStopRef.current();musicStopRef.current=null;}startLevel(0);}}
+            style={{padding:"14px 14px",background:"rgba(255,0,0,0.1)",
+              border:"2px solid rgba(255,0,0,0.25)",borderRadius:6,
+              color:"#ff4444",fontSize:15,cursor:"pointer",fontWeight:700}}>⛶</button>
+        </div>
+
+        {/* music toggle */}
+        <button onClick={()=>{getAudio();setMusicOn(v=>!v);}} style={{
+          display:"flex",alignItems:"center",gap:8,background:"transparent",
+          border:`1px solid ${musicOn?"#aa44ff55":"#333"}`,borderRadius:6,
+          padding:"7px 16px",color:musicOn?"#aa44ff":"#444",
+          fontSize:12,cursor:"pointer",WebkitTapHighlightColor:"transparent",
+          letterSpacing:2,textTransform:"uppercase",transition:"all 0.2s"}}>
+          <span style={{fontSize:16}}>{musicOn?"🎵":"🔇"}</span>
+          <span style={{fontSize:11}}>{musicOn?"MUSIC: ON":"MUSIC: OFF"}</span>
+          <span style={{width:30,height:14,borderRadius:2,background:musicOn?"#aa44ff":"#222",
+            display:"inline-block",position:"relative",border:`1px solid ${musicOn?"#8800ff":"#333"}`,transition:"background 0.2s"}}>
+            <span style={{position:"absolute",top:1,left:musicOn?16:1,width:10,height:10,
+              background:musicOn?"#fff":"#555",transition:"left 0.2s",borderRadius:1}}/>
+          </span>
+        </button>
+
+        <div style={{marginTop:14,fontSize:9,color:"#333",letterSpacing:3,textTransform:"uppercase"}}>
+          MADE BY &nbsp;<span style={{color:"#aa44ff"}}>ZAID IMAD</span>&nbsp; WITH AI
+        </div>
+      </div>
+
+      <div style={{position:"relative",zIndex:2,
+        background:"linear-gradient(90deg,#aa000022,#ff000044,#aa000022)",
+        borderTop:"1px solid #ff000044",padding:"5px",textAlign:"center",
+        fontSize:9,letterSpacing:3,color:"#ff2222",textTransform:"uppercase"}}>
+        ☠ &nbsp; CLASSIFIED — OPERATION DEAD ORBIT &nbsp; ☠
+      </div>
+
+      <style>{`
+        @keyframes twinkle{from{opacity:0.1}to{opacity:0.9}}
+        @keyframes battle{0%,100%{transform:scale(1)}50%{transform:scale(1.08)}}
+        @keyframes redpulse{0%,100%{box-shadow:0 0 16px rgba(200,0,0,0.4)}50%{box-shadow:0 0 40px rgba(255,0,0,0.8)}}
+        @keyframes glitch{
+          0%,95%{transform:translate(0,0);filter:drop-shadow(0 0 12px rgba(255,0,0,0.6))}
+          96%{transform:translate(-3px,0);filter:drop-shadow(3px 0 0 #ff0000) drop-shadow(-3px 0 0 #00ffff)}
+          97%{transform:translate(3px,0);filter:drop-shadow(-3px 0 0 #ff0000) drop-shadow(3px 0 0 #00ffff)}
+          98%{transform:translate(0,2px)}99%{transform:translate(-2px,0)}
+          100%{transform:translate(0,0);filter:drop-shadow(0 0 12px rgba(255,0,0,0.6))}
+        }
+      `}</style>
+    </div>
+  );
+
+  // ── PLAYING ──
+  if(screen==="playing") return (
+    <div style={{width:"100vw",height:"100vh",overflow:"hidden",position:"relative",
+      background:"#000",touchAction:"none",overscrollBehavior:"none"}}>
+      {HUD}{ComboHUD}{ComboFlashOverlay}
+      <canvas ref={canvasRef} width={W} height={H}
+        style={{display:"block",margin:"0 auto",touchAction:"none",overscrollBehavior:"none"}}/>
+      {KillBar}{Controls}
+      <style>{`
+        @keyframes flashCombo{0%{opacity:0;transform:translateX(-50%) scale(0.7)}50%{opacity:1;transform:translateX(-50%) scale(1.15)}100%{opacity:1;transform:translateX(-50%) scale(1)}}
+        @keyframes fadeFlash{0%{opacity:1}100%{opacity:0}}
+      `}</style>
+    </div>
+  );
+
+  // ── DEAD ──
+  if(screen==="dead") return (
+    <div style={{minHeight:"100vh",background:"linear-gradient(160deg,#0a0000,#1a0005,#050000)",
+      display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+      fontFamily:"monospace",color:"#fff",gap:14,padding:24,textAlign:"center"}}>
+      <div style={{fontSize:64,animation:"shake 0.3s ease infinite"}}>💀</div>
+      <div style={{color:"#ff2244",fontSize:28,fontWeight:900,letterSpacing:3,textShadow:"0 0 20px #ff0000"}}>YOU DIED</div>
+      <div style={{color:"#888",fontSize:13}}>Level {levelIdx+1} — {lvl.name}</div>
+      <div style={{background:"rgba(255,0,0,0.08)",border:"1px solid #ff224428",borderRadius:12,padding:"12px 28px"}}>
+        <div style={{color:"#555",fontSize:11}}>Score</div>
+        <div style={{color:"#ff4466",fontSize:32,fontWeight:900}}>{score}</div>
+        {score>=best&&score>0&&<div style={{color:"#ffd700",fontSize:11,marginTop:4}}>🏆 New Best!</div>}
+        <div style={{color:"#ffd700",fontSize:12,marginTop:6}}>🪙 +{coins} coins earned</div>
+      </div>
+      <div style={{display:"flex",gap:10}}>
+        <button onClick={()=>startLevel(levelIdx,0)} style={{padding:"12px 28px",
+          background:"linear-gradient(135deg,#880000,#440000)",border:"none",
+          borderRadius:30,color:"#fff",fontSize:14,fontWeight:800,cursor:"pointer"}}>↺ Retry</button>
+        <button onClick={()=>{setScreen("intro");setScore(0);}} style={{padding:"12px 28px",
+          background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",
+          borderRadius:30,color:"#aaa",fontSize:14,cursor:"pointer"}}>🏠 Menu</button>
+      </div>
+      <style>{`@keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-5px)}75%{transform:translateX(5px)}}`}</style>
+    </div>
+  );
+
+  // ── LEVEL UP ──
+  if(screen==="levelup") return (
+    <div style={{minHeight:"100vh",background:`linear-gradient(160deg,${LEVELS[levelIdx+1]?.bg[0]||"#000"},${LEVELS[levelIdx+1]?.bg[1]||"#000"})`,
+      display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+      fontFamily:"monospace",color:"#fff",gap:14,padding:24,textAlign:"center"}}>
+      <div style={{fontSize:64,animation:"floatLogo 2s ease-in-out infinite"}}>🎯</div>
+      <div style={{color:LEVELS[levelIdx+1]?.color||"#fff",fontSize:28,fontWeight:900,
+        letterSpacing:3,textShadow:`0 0 20px ${LEVELS[levelIdx+1]?.color||"#fff"}`}}>
+        LEVEL {levelIdx+2}
+      </div>
+      <div style={{color:"#aaa",fontSize:14}}>{LEVELS[levelIdx+1]?.name}</div>
+      <div style={{color:"#888",fontSize:12,maxWidth:240,lineHeight:1.7}}>
+        🧟 {LEVELS[levelIdx+1]?.count} zombies incoming<br/>
+        {LEVELS[levelIdx+1]?.shootBack?"⚡ They shoot back!":"🚶 Slow walkers"}
+      </div>
+      <div style={{display:"flex",gap:10}}>
+        <div style={{background:"rgba(255,255,255,0.05)",border:`1px solid ${LEVELS[levelIdx+1]?.color}33`,borderRadius:12,padding:"10px 20px",textAlign:"center"}}>
+          <div style={{color:"#555",fontSize:11}}>Score</div>
+          <div style={{color:LEVELS[levelIdx+1]?.color,fontSize:26,fontWeight:900}}>{score}</div>
+        </div>
+        <div style={{background:"rgba(255,215,0,0.08)",border:"1px solid #ffd70033",borderRadius:12,padding:"10px 20px",textAlign:"center"}}>
+          <div style={{color:"#555",fontSize:11}}>Coins</div>
+          <div style={{color:"#ffd700",fontSize:26,fontWeight:900}}>🪙 {coins}</div>
+        </div>
+      </div>
+      <button onClick={()=>startLevel(levelIdx+1,score)} style={{padding:"14px 40px",
+        background:`linear-gradient(135deg,${LEVELS[levelIdx+1]?.color}88,${LEVELS[levelIdx+1]?.color}44)`,
+        border:`2px solid ${LEVELS[levelIdx+1]?.color}44`,borderRadius:36,color:"#fff",
+        fontSize:16,fontWeight:900,cursor:"pointer",letterSpacing:1,
+        boxShadow:`0 0 30px ${LEVELS[levelIdx+1]?.color}44`,animation:"pulsebtn 1.8s ease-in-out infinite"}}>
+        ▶ CONTINUE
+      </button>
+      <style>{`
+        @keyframes floatLogo{0%,100%{transform:translateY(0)}50%{transform:translateY(-12px)}}
+        @keyframes pulsebtn{0%,100%{box-shadow:0 0 15px rgba(200,100,255,0.3)}50%{box-shadow:0 0 40px rgba(200,100,255,0.7)}}
+      `}</style>
+    </div>
+  );
+
+  // ── WIN ──
+  if(screen==="win") return (
+    <div style={{minHeight:"100vh",background:"linear-gradient(160deg,#050000,#100005,#030010)",
+      display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+      fontFamily:"monospace",color:"#fff",gap:14,padding:24,textAlign:"center",position:"relative",overflow:"hidden"}}>
+      {Array.from({length:35}).map((_,i)=>(
+        <div key={i} style={{position:"fixed",fontSize:i%4===0?20:12,
+          top:`${Math.random()*100}%`,left:`${Math.random()*100}%`,
+          animation:`twinkle ${1+Math.random()*2}s ease-in-out infinite alternate`,
+          pointerEvents:"none",opacity:Math.random()*0.6+0.3}}>
+          {["⭐","💫","✨","🌟"][i%4]}
+        </div>
+      ))}
+      <div style={{fontSize:80,filter:"drop-shadow(0 0 30px rgba(255,215,0,0.9))",
+        animation:"floatLogo 2.5s ease-in-out infinite",marginBottom:6}}>🏆</div>
+      <div style={{color:"#ffd700",fontSize:26,fontWeight:900,letterSpacing:2,textShadow:"0 0 28px gold"}}>GALAXY CLEARED!</div>
+      <div style={{color:"#ff9900",fontSize:20,fontWeight:900,marginTop:4}}>🎉 مبروك يا بطل وادي الحداد 🎉</div>
+      <div style={{color:"#ffcc66",fontSize:12,opacity:0.85}}>All 5 levels conquered — you are the zombie slayer!</div>
+      <div style={{display:"flex",gap:10,flexWrap:"wrap",justifyContent:"center"}}>
+        <div style={{background:"rgba(255,215,0,0.1)",border:"1px solid #ffd70030",borderRadius:12,padding:"12px 22px",textAlign:"center"}}>
+          <div style={{color:"#666",fontSize:11}}>Final Score</div>
+          <div style={{color:"#ffd700",fontSize:36,fontWeight:900,textShadow:"0 0 16px gold"}}>{score}</div>
+          <div style={{color:"#555",fontSize:11}}>Best: {best}</div>
+        </div>
+        <div style={{background:"rgba(255,215,0,0.06)",border:"1px solid #ffd70020",borderRadius:12,padding:"12px 22px",textAlign:"center"}}>
+          <div style={{color:"#666",fontSize:11}}>Total Coins</div>
+          <div style={{color:"#ffd700",fontSize:36,fontWeight:900}}>🪙 {coins}</div>
+        </div>
+      </div>
+      <div style={{color:"#444",fontSize:11,marginTop:4}}>By <span style={{color:"#ffd700"}}>Zaid Imad</span></div>
+      <div style={{display:"flex",gap:10}}>
+        <button onClick={()=>{setScreen("intro");setScore(0);setBest(b=>Math.max(b,score));}}
+          style={{padding:"13px 28px",background:"linear-gradient(135deg,#ffd700,#c89000)",
+            border:"none",borderRadius:36,color:"#000",fontSize:15,fontWeight:900,cursor:"pointer"}}>🏠 Menu</button>
+        <button onClick={()=>setShopScreen(true)} style={{padding:"13px 28px",
+          background:"rgba(255,215,0,0.12)",border:"2px solid rgba(255,215,0,0.3)",
+          borderRadius:36,color:"#ffd700",fontSize:15,fontWeight:700,cursor:"pointer"}}>🪙 Shop</button>
+      </div>
+      <style>{`
+        @keyframes floatLogo{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-16px) scale(1.04)}}
+        @keyframes twinkle{from{opacity:0.15}to{opacity:0.9}}
+      `}</style>
+    </div>
+  );
+}
+
+window.__DeadOrbitApp = App;
+
+window.addEventListener("load", () => {
+  document.getElementById("loading").style.display = "none";
+  ReactDOM.createRoot(document.getElementById("root")).render(
+    React.createElement(window.__DeadOrbitApp)
+  );
+});
+  </script>
+</body>
+</html>
